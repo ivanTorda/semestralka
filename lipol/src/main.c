@@ -7,7 +7,10 @@
 #include "stm32l1xx_flash.h"
 
 #define NUMBER_OF_SAMPLES 10
+#define MAX_STRLEN 12 // this is the maximum string length of our string in characters
 
+char received_string[MAX_STRLEN+1]; // this will hold the recieved string
+uint8_t eeprom[256];
 FLASH_Status FLASHStatus;
 ///////////////////////////////////////////////////////////
 //vsetky tieto premenne su nejake stavove premenne, FLAGY,
@@ -21,14 +24,14 @@ float actualCurrent = 0.00;
 float current = 0.00;
 uint16_t voltage = 0.00;
 
-uint8_t eepromCurrentPosition = 0;
+uint32_t eepromCurrentPosition = 0;
 uint8_t currentMeasureTime = 0; //counter for make a sample
 uint8_t voltageMeasureTime = 0;
 uint8_t startMeasureFlag = 0; //start/stop flag for measuring
 uint8_t clearEEPROMFlag = 0; //start/stop flag for measuring
 
 uint8_t measureStatus = 0; //0 - not measuring; 1 - measuring; 2 - stopped measure, EEPROM overflow; 3 - stopped measure low battery;
-
+uint8_t startRead = 0;
 
 
 //Ak je clanok plne nabity, tak ma napatie 4.2 Volta
@@ -41,7 +44,7 @@ uint8_t lowVoltageCell = 3.4;
 uint8_t numberOfCell = 3;
 
 // to je premenna pre kriticke napatie baterky 3*3.4V = 10.2V
-uint8_t voltageCutOff = lowVoltageCell * numberOfCell;;
+uint8_t voltageCutOff;
 
 //counter
 uint8_t i = 0;
@@ -73,70 +76,13 @@ int main(void) {
 	LED_init();
 	clearEEPROM();
 	USART_puts("ready\r");
-	char str[10];
+
+	voltageCutOff = lowVoltageCell * numberOfCell;
 
 	memset(currentSamples, 0, NUMBER_OF_SAMPLES);
-	memset(str, 0, 10);
+
 
 	while (1) {
-		//Ak pride 'a'(Ampere), chcem aby mi poslal naspat aktualny prud, ktory tecie, a blikni ledkou..
-		if (receivedChar == 'a') {
-			STM_EVAL_LEDOn(LED2);
-			receivedChar = 0;
-			sprintf(str, "%.3f\r", actualCurrent);
-			USART_puts(str);
-			STM_EVAL_LEDOff(LED2);
-			continue;
-		//Ak pride 'v'(Voltage), tak mi hod naspat aktualne napatie baterky, a blikni ledkou..
-		} else if (receivedChar == 'v') {
-			STM_EVAL_LEDOn(LED2);
-			receivedChar = 0;
-			sprintf(str, "%.3f\r", getVoltage());
-			USART_puts(str);
-			STM_EVAL_LEDOff(LED2);
-			continue;
-		//Ak pride 'm' (Measure status), tak mi hod naspat stav, ci sa meria/nemeria/kalibruje.. proste aby som vedel
-		//ze ci nieco robi :P
-		} else if (receivedChar == 'm') {
-			STM_EVAL_LEDOn(LED2);
-			receivedChar = 0;
-			sprintf(str, "%i\r", measureStatus);
-			USART_puts(str);
-			STM_EVAL_LEDOff(LED2);
-			continue;
-		//Ak pride 'p' (Possition), tak mi hod naspat aktualny stav naplnenia EEPROM. priklad, odosle mi ze
-		// uz som zapisal na 100tu poziciu z 256..
-		} else if (receivedChar == 'p') {
-			STM_EVAL_LEDOn(LED2);
-			receivedChar = 0;
-			sprintf(str, "%i\r", eepromCurrentPosition);
-			USART_puts(str);
-			STM_EVAL_LEDOff(LED2);
-			continue;
-		//Ak pride 's' (Start measure), tak spusti meraciu proceduru, zavola sa funkcia startMeasure();
-		} else if (receivedChar == 's') {
-			STM_EVAL_LEDOn(LED2);
-			startMeasure();
-			receivedChar = 0;
-			STM_EVAL_LEDOff(LED2);
-			continue;
-		//Ak pride 'e' (End measure), tak ukonci meraciu proceduru, zavola sa funkcia stopMeasure();
-		} else if (receivedChar == 'e') {
-			STM_EVAL_LEDOn(LED2);
-			stopMeasure();
-			receivedChar = 0;
-			STM_EVAL_LEDOff(LED2);
-			continue;
-		// toto som nieco skusal.. taka prdka.. Na mazanie EEPROMky.. ale neni to take jednoduche
-		} else if (receivedChar == 'n') {
-			STM_EVAL_LEDOn(LED2);
-			clearEEPROM();
-			startMeasure();
-			receivedChar = 0;
-			STM_EVAL_LEDOff(LED2);
-			continue;
-		}
-
 
 
 	}
@@ -198,7 +144,8 @@ void TIM4_IRQHandler(void) {
 					TIM_ClearITPendingBit(TIM4, TIM_IT_Update);
 					return;
 				}else{
-					writeEEPROMByte(eepromCurrentPosition, actualCurrent); //write current into EEPROM
+					writeEEPROMByte(eepromCurrentPosition,(uint8_t) actualCurrent); //write current into EEPROM
+					eeprom[eepromCurrentPosition]=actualCurrent;
 					eepromCurrentPosition++;
 					measureStatus = 1;
 					GPIO_SetBits(GPIOA, GPIO_Pin_7);
@@ -255,11 +202,21 @@ void TIM3_IRQHandler(void) {
  * jedina jej starost je, aby ulozila prijaty znak do globalnej premennej receivedChar.
  */
 void USART1_IRQHandler(void) {
-	if (USART_GetITStatus(USART1, USART_IT_RXNE) != RESET) {
-		receivedChar = USART_ReceiveData(USART1);
-		USART_ClearITPendingBit(USART1, USART_IT_RXNE);
-
-	}
+	if (USART_GetITStatus(USART1, USART_IT_RXNE)) {
+			static uint8_t cnt = 0; // this counter is used to determine the string length
+			char t = USART1->DR; // the character from the USART1 data register is saved in t
+			if ((t != '\n') && (cnt < MAX_STRLEN)) {
+				received_string[cnt] = t;
+				cnt++;
+			} else {
+				cnt = 0;
+				//USART_puts(USART1, USART_Handle(received_string));
+				handleUSARTCommands();
+				for (uint8_t i = 0; i <= MAX_STRLEN + 1; i++) {
+					received_string[i] = '\0';
+				}
+			}
+		}
 }
 
 /*
@@ -303,6 +260,105 @@ void stopMeasure() {
 
 }
 
+void handleUSARTCommands(){
+	char str[10];
+	if (strcmp(received_string, "at\r") == 0) {
+		STM_EVAL_LEDOn(LED2);
+		memset(received_string, '0', sizeof(received_string));
+		USART_puts("OK\r");
+		STM_EVAL_LEDOff(LED2);
+		return;
+	}
+	if (strcmp(received_string, "amp\r") == 0) {
+		STM_EVAL_LEDOn(LED2);
+		memset(received_string, '0', sizeof(received_string));
+		sprintf(str, "%.3f\r", actualCurrent);
+		USART_puts(str);
+		STM_EVAL_LEDOff(LED2);
+		return;
+		//Ak pride 'v'(Voltage), tak mi hod naspat aktualne napatie baterky, a blikni ledkou..
+	}
+	if (strcmp(received_string, "volt\r") == 0) {
+		STM_EVAL_LEDOn(LED2);
+		memset(received_string, '0', sizeof(received_string));
+		sprintf(str, "%.3f\r", getVoltage());
+		USART_puts(str);
+		STM_EVAL_LEDOff(LED2);
+		return;
+		//Ak pride 'm' (Measure status), tak mi hod naspat stav, ci sa meria/nemeria/kalibruje.. proste aby som vedel
+		//ze ci nieco robi :P
+	}
+	if (strcmp(received_string, "ms\r") == 0) {
+		STM_EVAL_LEDOn(LED2);
+		memset(received_string, '0', sizeof(received_string));
+		sprintf(str, "%i\r", measureStatus);
+		USART_puts(str);
+		STM_EVAL_LEDOff(LED2);
+		return;
+		//Ak pride 'p' (Possition), tak mi hod naspat aktualny stav naplnenia EEPROM. priklad, odosle mi ze
+		// uz som zapisal na 100tu poziciu z 256..
+	}
+	if (strcmp(received_string, "pos\r") == 0) {
+		STM_EVAL_LEDOn(LED2);
+		memset(received_string, '0', sizeof(received_string));
+		sprintf(str, "%i\r", eepromCurrentPosition);
+		USART_puts(str);
+		STM_EVAL_LEDOff(LED2);
+		return;
+		//Ak pride 's' (Start measure), tak spusti meraciu proceduru, zavola sa funkcia startMeasure();
+	}
+	if (strcmp(received_string, "startM\r") == 0) {
+		STM_EVAL_LEDOn(LED2);
+		memset(received_string, '0', sizeof(received_string));
+		startMeasure();
+		STM_EVAL_LEDOff(LED2);
+		return;
+		//Ak pride 'e' (End measure), tak ukonci meraciu proceduru, zavola sa funkcia stopMeasure();
+	}
+	if (strcmp(received_string, "stopM\r") == 0) {
+		STM_EVAL_LEDOn(LED2);
+		memset(received_string, '0', sizeof(received_string));
+		stopMeasure();
+		STM_EVAL_LEDOff(LED2);
+		return;
+	}
+	if (strcmp(received_string, "startC\r") == 0) {
+		STM_EVAL_LEDOn(LED2);
+		memset(received_string, '0', sizeof(received_string));
+		GPIO_ResetBits(GPIOA, GPIO_Pin_6);
+		STM_EVAL_LEDOff(LED2);
+		return;
+		//Ak pride 'e' (End measure), tak ukonci meraciu proceduru, zavola sa funkcia stopMeasure();
+	}
+	if (strcmp(received_string, "stopC\r") == 0) {
+		STM_EVAL_LEDOn(LED2);
+		memset(received_string, '0', sizeof(received_string));
+		GPIO_SetBits(GPIOA, GPIO_Pin_6);
+		STM_EVAL_LEDOff(LED2);
+		return;
+	}
+	char src[10];
+	char dest[6];
+	memset(dest, '\0', sizeof(dest));
+	strcpy(src, received_string);
+	strncpy(dest, src, 4);
+	if (strcmp(dest, "read") == 0) {
+		STM_EVAL_LEDOn(LED2);
+		char subbuff[6];
+		memcpy(subbuff, &received_string[4], 6);
+		subbuff[5] = '\0';
+		char s[5];
+		strcpy(s, replace(subbuff, '\r', '\0'));
+		u_int8_t value = 0;
+		value = atoi(s);
+		sprintf(str, "%i\r", eeprom[value]);
+		USART_puts(str);
+		memset(received_string, '0', sizeof(received_string));
+		STM_EVAL_LEDOff(LED2);
+		return;
+	}
+}
+
 
 /*
  * funkcia, ktora mi pri zavolani vypluje aktualne napatie vo Voltoch
@@ -315,25 +371,47 @@ float getVoltage(void) {
 void clearEEPROM() {
 	for (uint16_t j = 0; j < 256; j++) {
 		FLASHStatus = writeEEPROMByte(j, (uint8_t) 0);
+		eeprom[j]=0;
 	}
 	eepromCurrentPosition = 0;
 }
 
 FLASH_Status writeEEPROMByte(uint32_t address, uint8_t data) {
-	FLASH_Status status = FLASH_COMPLETE;
-	address = address + 0x08080000;
-	DATA_EEPROM_Unlock();  //Unprotect the EEPROM to allow writing
-	status = DATA_EEPROM_ProgramByte(address, data);
-	DATA_EEPROM_Lock();  // Reprotect the EEPROM
-	return status;
+    FLASH_Status status = FLASH_COMPLETE;
+    address = address + 0x08080000;
+    DATA_EEPROM_Unlock();  //Unprotect the EEPROM to allow writing
+    status = DATA_EEPROM_ProgramByte(address, data);
+    DATA_EEPROM_Lock();  // Reprotect the EEPROM
+    return status;
 }
 
 uint8_t readEEPROMByte(uint32_t address) {
-	uint8_t tmp = 0;
-	address = address + 0x08080000;
-	tmp = *(__IO uint32_t*) address;
+    uint8_t tmp = 0;
+    address = address + 0x08080000;
+    tmp = *(__IO uint32_t*)address;
 
-	return tmp;
+    return tmp;
+}
+
+char *replace(const char *s, char ch, const char *repl) {
+    int count = 0;
+    const char *t;
+    for(t=s; *t; t++)
+        count += (*t == ch);
+
+    size_t rlen = strlen(repl);
+    char *res = malloc(strlen(s) + (rlen-1)*count + 1);
+    char *ptr = res;
+    for(t=s; *t; t++) {
+        if(*t == ch) {
+            memcpy(ptr, repl, rlen);
+            ptr += rlen;
+        } else {
+            *ptr++ = *t;
+        }
+    }
+    *ptr = 0;
+    return res;
 }
 
 #ifdef  USE_FULL_ASSERT

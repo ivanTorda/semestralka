@@ -43,6 +43,7 @@ uint8_t readEEPROMByte(uint32_t address);
 FLASH_Status writeEEPROMByte(uint32_t address, uint8_t data);
 void clearEEPROM();
 float getVoltage(void);
+char *replace(const char *s, char ch, const char *repl);
 #endif /* __MAIN_H */
 
 /************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/
